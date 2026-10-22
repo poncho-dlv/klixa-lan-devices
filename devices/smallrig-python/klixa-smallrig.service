@@ -1,0 +1,16 @@
+[Unit]
+Description=Klixa - Lampes SmallRig RM75 (appareil LAN)
+After=network-online.target bluetooth.service
+Wants=network-online.target bluetooth.service
+
+[Service]
+Type=simple
+# Adapter l'utilisateur et le chemin selon l'installation
+User=pi
+WorkingDirectory=/home/pi/klixa-lan-devices/devices/smallrig-python
+ExecStart=/home/pi/klixa-lan-devices/devices/smallrig-python/.venv/bin/python -m klixa_smallrig run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

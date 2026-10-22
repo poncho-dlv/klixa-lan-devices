@@ -1,0 +1,114 @@
+{
+ "cmac": [
+  [
+   "",
+   "91773796cf510124d3593a331b9d7c51"
+  ],
+  [
+   "68656c6c6f206d657368",
+   "7575539afc443424e31fe03d3f6ccc22"
+  ],
+  [
+   "07070707070707070707070707070707",
+   "b97559f55b97280f0c6dea4838c5efdc"
+  ],
+  [
+   "09090909090909090909090909090909090909090909090909090909090909090909090909090909",
+   "177a4df506acd7e7d2b1f0ba63fa5176"
+  ]
+ ],
+ "s1": "b73cefbd641ef2ea598c2b6efb62f79c",
+ "k2": {
+  "nid": 30,
+  "enc": "eaa68445ffa4f38f96f2ccc5cc16119c",
+  "priv": "33f2dddefd05965a2ff862ddcbf8298c"
+ },
+ "k3": "1fbd2c61a4b6e5a4",
+ "k4": 50,
+ "k1": "f28ce6fa0a35ffdbae697435976224f7",
+ "netkeys": {
+  "nid": 30,
+  "enc": "eaa68445ffa4f38f96f2ccc5cc16119c",
+  "priv": "33f2dddefd05965a2ff862ddcbf8298c",
+  "id": "1fbd2c61a4b6e5a4"
+ },
+ "net": [
+  {
+   "ctl": false,
+   "ttl": 5,
+   "seq": 291,
+   "src": 1,
+   "dst": 2,
+   "tp": "00aabbccddeeff",
+   "nonce": "network",
+   "pdu": "1e5bc7cd06becadfb81d1ff1aaacff347d1ee20b"
+  },
+  {
+   "ctl": true,
+   "ttl": 5,
+   "seq": 65518,
+   "src": 1,
+   "dst": 2,
+   "tp": "00000102030405",
+   "nonce": "network",
+   "pdu": "1ea9098b9434df9014b404433bd66db381003a2c27951590"
+  },
+  {
+   "ctl": true,
+   "ttl": 0,
+   "seq": 7,
+   "src": 1,
+   "dst": 0,
+   "tp": "0000",
+   "nonce": "proxy",
+   "pdu": "1e4e7af4d40e6764d97a4e20b7268cc2a45eb5"
+  }
+ ],
+ "upper": [
+  {
+   "keyType": "app",
+   "key": "00112233445566778899aabbccddeeff",
+   "seq": 5,
+   "src": 1,
+   "dst": 3,
+   "ap": "24330001020304",
+   "enc": "3b16788f9c8d551fe93820"
+  },
+  {
+   "keyType": "device",
+   "key": "f0e1d2c3b4a5968778695a4b3c2d1e0f",
+   "seq": 99,
+   "src": 1,
+   "dst": 2,
+   "ap": "800800",
+   "enc": "6a97e4fb48936a"
+  }
+ ],
+ "segments": [
+  "806af001000102030405060708090a0b",
+  "806af0210c0d0e0f1011121314151617"
+ ],
+ "unseg": "4c0001020304050607",
+ "cfg": {
+  "compGet": "800800",
+  "appKeyAdd": "0000000000112233445566778899aabbccddeeff",
+  "bind": "803d05000000f6030010"
+ },
+ "lq": {
+  "hsi": "3304af00c85037",
+  "cct": "34049015e04623",
+  "rgbw": "36040401020304",
+  "fx1": "3505b901050302bc",
+  "fx3": "350305030503",
+  "fx2": "35040d02050309",
+  "lum": "42022a002a",
+  "on": "4202fefe00",
+  "off": "4202fcfc00",
+  "vendor": "244202fefe00"
+ },
+ "proxy": [
+  "405a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+  "805a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+  "c05a5a5a5a5a5a5a"
+ ]
+}

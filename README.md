@@ -19,6 +19,7 @@ dans le dépôt du compagnon.
 | --- | --- | --- | --- |
 | [`devices/smoke-machine`](devices/smoke-machine) | Machine à fumée commandée par un **relais électronique** (Raspberry Pi, GPIO) | Python | élément `switch` (impulsion à durée bornée) |
 | [`devices/smallrig`](devices/smallrig) | Lampes **SmallRig RM75** (Bluetooth Mesh) | Node.js | éléments `light` (couleur, intensité, blanc réglable, effets) |
+| [`devices/smallrig-python`](devices/smallrig-python) | Lampes **SmallRig RM75** (Bluetooth Mesh) — portage Python du précédent, recommandé sur Raspberry Pi | Python | éléments `light` (identiques) |
 
 Chaque dossier est **autonome** (son propre README, ses dépendances, ses tests) : on ne déploie que ce dont on a
 besoin, sur la machine qui est branchée au matériel.
@@ -59,10 +60,10 @@ La fonctionnalité « Appareils LAN » peut être réservée au plan Premium sel
 ## Tests
 
 ```bash
-npm test          # test anti-dérive du SDK + tests Python (smoke-machine, SDK)
+npm test          # test anti-dérive du SDK + tests Python (SDK, smoke-machine, smallrig-python)
 ```
 
-Les tests Python demandent `pip install websockets`. Les tests de `devices/smallrig` se lancent depuis son dossier
+Les tests Python demandent `pip install websockets cryptography bleak`. Les tests de `devices/smallrig` se lancent depuis son dossier
 (`npm install`, `npm test`) : le code Bluetooth réel n'est pas testable sans matériel.
 
 ## Sécurité

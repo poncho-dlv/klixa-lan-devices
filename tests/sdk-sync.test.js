@@ -9,3 +9,7 @@ const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf
 test('devices/smoke-machine/klixa_device_agent.py est identique au SDK de référence', () => {
     assert.equal(read('devices/smoke-machine/klixa_device_agent.py'), read('sdk/python/klixa_device_agent.py'));
 });
+
+test('devices/smallrig-python/klixa_device_agent.py est identique au SDK de référence', () => {
+    assert.equal(read('devices/smallrig-python/klixa_device_agent.py'), read('sdk/python/klixa_device_agent.py'));
+});

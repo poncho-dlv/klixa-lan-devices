@@ -163,8 +163,15 @@ class DeviceAgent:
                 return agent.action(element_id, "set", element_type="light")(func)
 
             def get_state(self, func):
-                # getState n'a ni payload ni donnée : le handler ne prend aucun argument.
-                return agent.action(element_id, "getState", element_type="light")(lambda payload, data: func())
+                # getState n'a ni payload ni donnée : le handler ne prend aucun argument (fonction ou coroutine).
+                if inspect.iscoroutinefunction(func):
+                    async def handler(payload, data):
+                        return await func()
+                else:
+                    def handler(payload, data):
+                        return func()
+                agent.action(element_id, "getState", element_type="light")(handler)
+                return func
 
         return _Light()
 
@@ -276,20 +283,22 @@ class DeviceAgent:
         if self._ws is not None:
             asyncio.ensure_future(self._ws.close())
 
+    async def serve(self):
+        """Variante asynchrone de `run()` pour un script qui possède déjà sa boucle asyncio : se connecte, se
+        reconnecte, et s'arrête proprement sur SIGINT/SIGTERM."""
+        loop = asyncio.get_running_loop()
+        with contextlib.suppress(NotImplementedError):
+            # add_signal_handler n'existe pas sur Windows — sans effet en dev,
+            # KeyboardInterrupt reste géré normalement par asyncio.run().
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.add_signal_handler(sig, self.stop)
+        await self._run_forever()
+
     def run(self):
         """Point d'entrée bloquant — gère aussi l'arrêt propre sur Ctrl+C/SIGTERM
         (utile pour un service systemd, cf. rpi/klixa-smoke-relay.service)."""
-        async def main():
-            loop = asyncio.get_running_loop()
-            with contextlib.suppress(NotImplementedError):
-                # add_signal_handler n'existe pas sur Windows — sans effet en dev,
-                # KeyboardInterrupt reste géré normalement par asyncio.run().
-                for sig in (signal.SIGINT, signal.SIGTERM):
-                    loop.add_signal_handler(sig, self.stop)
-            await self._run_forever()
-
         try:
-            asyncio.run(main())
+            asyncio.run(self.serve())
         except KeyboardInterrupt:
             pass
 

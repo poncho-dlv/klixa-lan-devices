@@ -90,6 +90,28 @@ class AgentTest(unittest.TestCase):
         self.assertEqual(element["fxModes"], [{"id": "rainbow", "label": "Arc-en-ciel"}])
         self.assertEqual(companion.acks[1]["result"], {"on": True, "color": "#FF0000"})
 
+    def test_les_handlers_d_une_lampe_peuvent_etre_des_coroutines(self):
+        agent = DeviceAgent("ws://x", "t", "lamp-1")
+        lamp = agent.light("strip", capabilities=["onoff"])
+        state = {"on": False}
+
+        @lamp.set
+        async def set_strip(new_state, data):
+            state.update(new_state)
+            return {"applied": True}
+
+        @lamp.get_state
+        async def get_strip():
+            return dict(state)
+
+        companion = asyncio.run(run_agent_against(agent, [
+            {"id": "c1", "elementId": "strip", "action": "set", "payload": {"on": True}, "data": {}},
+            {"id": "c2", "elementId": "strip", "action": "getState", "payload": {}, "data": {}},
+        ]))
+
+        self.assertEqual(companion.acks[0]["result"], {"applied": True})
+        self.assertEqual(companion.acks[1], {"type": "ack", "id": "c2", "ok": True, "result": {"on": True}})
+
     def test_une_exception_du_handler_devient_un_ack_en_echec(self):
         agent = DeviceAgent("ws://x", "t", "d")
 

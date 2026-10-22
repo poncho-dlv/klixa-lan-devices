@@ -1,0 +1,6 @@
+# Bluetooth LE (BlueZ sous Linux/Raspberry Pi, WinRT sous Windows, CoreBluetooth sous macOS)
+bleak>=0.22
+# AES-CMAC / AES-CCM / ECDH P-256 du Bluetooth Mesh
+cryptography>=42
+# Connexion WebSocket sortante vers le compagnon (klixa_device_agent.py)
+websockets>=13

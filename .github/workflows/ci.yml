@@ -16,7 +16,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - run: pip install websockets
-      # Anti-dérive du SDK + tests Python (SDK, machine à fumée). devices/smallrig a ses propres tests
+      - run: pip install websockets cryptography bleak
+      # Anti-dérive du SDK + tests Python (SDK, machine à fumée, SmallRig Python). devices/smallrig a ses propres tests
       # (npm install + build natif Bluetooth) : lancés à la main, le Bluetooth réel n'étant pas testable en CI.
       - run: npm test

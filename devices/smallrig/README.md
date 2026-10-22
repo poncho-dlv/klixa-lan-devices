@@ -16,6 +16,10 @@ Klixa (cloud) ⇄ Klixa Companion ⇄ ce script ⇄ (Bluetooth Mesh) ⇄ lampes 
 > des appareils LAN (annonce des lampes, `set`, `getState`) est couverte par des tests, mais **n'a pas été
 > validée sur une lampe réelle**. La plage de température (2500–10000 K) est une valeur usuelle non confirmée.
 
+> **Version Python :** [`devices/smallrig-python`](../smallrig-python) fait la même chose en Python (`bleak`, BlueZ),
+> avec le même format de fichier d'état. C'est la version à privilégier sur un Raspberry Pi ; ne lancez jamais les
+> deux en parallèle.
+
 ## Prérequis
 
 - Node.js ≥ 20.6, sur la machine qui est à portée Bluetooth des lampes (souvent le PC du streamer).
