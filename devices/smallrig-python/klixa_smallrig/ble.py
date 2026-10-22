@@ -137,15 +137,47 @@ class GattConnection:
             log.warning("Erreur à la déconnexion GATT : %s", error)
 
 
+def _is_device_gone(error):
+    """BlueZ oublie les périphériques découverts par un scan terminé : l'objet D-Bus de la lampe peut avoir
+    disparu entre le scan et la connexion (« device ... not found »)."""
+    text = str(error).lower()
+    return "not found" in text or "was not found" in text
+
+
+async def _connect(device, attempts=3):
+    """Connecte un client bleak. Si BlueZ a oublié l'appareil, rescanne CETTE adresse pour obtenir un objet
+    frais, puis réessaie."""
+    from bleak import BleakClient, BleakScanner
+
+    target = device.device if isinstance(device, LampAdvertisement) else device
+    address = getattr(target, "address", None)
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        client = BleakClient(target, timeout=CONNECT_TIMEOUT_S)
+        try:
+            await client.connect()
+            return client
+        except Exception as error:  # noqa: BLE001
+            last_error = error
+            try:
+                await client.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+            if attempt == attempts or not _is_device_gone(error) or not address:
+                break
+            log.info("Périphérique %s oublié par BlueZ, nouveau scan ciblé (essai %d/%d)", address, attempt, attempts)
+            fresh = await BleakScanner.find_device_by_address(address, timeout=10.0)
+            if fresh is not None:
+                target = fresh
+    raise last_error
+
+
 async def open_gatt_connection(device, *, service_uuid, data_in_uuid, data_out_uuid, on_data,
                                max_attribute_value_length=DEFAULT_MAX_ATTRIBUTE_VALUE_LENGTH) -> GattConnection:
-    from bleak import BleakClient
-
-    client = BleakClient(device.device if isinstance(device, LampAdvertisement) else device,
-                         timeout=CONNECT_TIMEOUT_S)
     phase = "connexion au périphérique"
+    client = None
     try:
-        await client.connect()
+        client = await _connect(device)
         phase = f"découverte du service 0x{service_uuid:04x}"
         service = client.services.get_service(uuid_string(service_uuid))
         if service is None:
@@ -164,11 +196,13 @@ async def open_gatt_connection(device, *, service_uuid, data_in_uuid, data_out_u
         phase = "activation des notifications"
         await client.start_notify(data_out, on_notification)
     except Exception as error:
-        try:
-            await client.disconnect()
-        except Exception:  # noqa: BLE001
-            pass
-        raise BleError(f"Ouverture GATT 0x{service_uuid:04x} échouée pendant {phase} : {error}") from error
+        if client is not None:
+            try:
+                await client.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+        detail = str(error) or type(error).__name__
+        raise BleError(f"Ouverture GATT 0x{service_uuid:04x} échouée pendant {phase} : {detail}") from error
     return GattConnection(client, data_in, max_attribute_value_length)
 
 
