@@ -35,18 +35,13 @@ cp .env.example .env               # puis renseigner DEVICE_TOKEN
 Dans l'app **Klixa Companion** : activer « Autoriser les appareils LAN à se connecter », ouvrir la page
 « Appareils LAN », générer un token pour l'identifiant `smallrig` (= `DEVICE_ID`), le coller dans `.env`.
 
-## Premier appairage
-
-Si vous veniez de l'ancien support SmallRig du compagnon (≤ 0.5.x), les lampes sont **appairées à neuf** ici :
-l'ancien état mesh n'est pas repris.
+## Appairage
 
 1. Réinitialiser la lampe (selon son mode d'emploi) pour qu'elle se remette à annoncer qu'elle est à appairer.
 2. `npm run cli -- scan` pour vérifier qu'elle est vue, puis `npm run cli -- pair --name "Bureau"`.
 3. `npm run cli -- run` : la lampe apparaît dans Klixa.
 
-L'identifiant d'une lampe est son uuid matériel : il ne change pas quand on la ré-appaire. Les réglages Klixa qui la
-référençaient (thèmes, BPM, automatisations) sont convertis par le script de migration côté Klixa
-(`scripts/migrate-smallrig-to-device.js`) et la retrouvent donc à l'identique.
+L'identifiant d'une lampe est son uuid matériel : il ne change pas quand on la ré-appaire.
 
 ## Utilisation
 
