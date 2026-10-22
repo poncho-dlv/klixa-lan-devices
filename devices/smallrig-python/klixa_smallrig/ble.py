@@ -4,6 +4,7 @@ Seul module qui dépend d'un vrai adaptateur Bluetooth : tout le reste (crypto, 
 orchestration) est testé sans matériel."""
 import asyncio
 import logging
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional
 
@@ -15,7 +16,7 @@ PROXY_SERVICE, PROXY_DATA_IN, PROXY_DATA_OUT = 0x1828, 0x2ADD, 0x2ADE
 # Taille utile par écriture GATT (MTU 23 - 3 octets d'en-tête ATT). Valeur conservatrice : la segmentation
 # Proxy PDU absorbe la différence si le MTU réel est plus grand (juste plus de fragments que nécessaire).
 DEFAULT_MAX_ATTRIBUTE_VALUE_LENGTH = 20
-CONNECT_TIMEOUT_S = 30.0
+CONNECT_TIMEOUT_S = 20.0
 
 
 class BleError(Exception):
@@ -144,26 +145,68 @@ def _is_device_gone(error):
     return "not found" in text or "was not found" in text
 
 
-async def _connect(device, attempts=3):
-    """Connecte un client bleak. Si BlueZ a oublié l'appareil, rescanne CETTE adresse pour obtenir un objet
-    frais, puis réessaie."""
+async def _connect_while_scanning(device, address):
+    """BlueZ : une connexion LE vers un appareil qui n'est plus en cache n'aboutit que si une découverte est
+    active. On garde donc un scan en cours pendant `connect()` (et on repart de l'objet frais qu'il remonte)."""
     from bleak import BleakClient, BleakScanner
 
-    target = device.device if isinstance(device, LampAdvertisement) else device
-    address = getattr(target, "address", None)
-    last_error = None
-    for attempt in range(1, attempts + 1):
-        client = BleakClient(target, timeout=CONNECT_TIMEOUT_S)
+    seen = asyncio.Event()
+    fresh = {"device": None}
+
+    def on_detection(found, _advertisement):
+        if found.address.upper() == address.upper():
+            fresh["device"] = found
+            seen.set()
+
+    async with BleakScanner(detection_callback=on_detection):
+        try:
+            await asyncio.wait_for(seen.wait(), timeout=10.0)
+        except asyncio.TimeoutError:
+            log.info("Périphérique %s non revu pendant le scan, tentative de connexion quand même", address)
+        client = BleakClient(fresh["device"] or device, timeout=CONNECT_TIMEOUT_S)
         try:
             await client.connect()
-            return client
-        except Exception as error:  # noqa: BLE001
-            last_error = error
+        except BaseException:
             try:
                 await client.disconnect()
             except Exception:  # noqa: BLE001
                 pass
-            if attempt == attempts or not _is_device_gone(error) or not address:
+            raise
+        return client
+
+
+async def _connect(device, attempts=3):
+    """Connecte un client bleak (essais multiples ; sous Linux, scan actif pendant la connexion)."""
+    from bleak import BleakClient, BleakScanner
+
+    target = device.device if isinstance(device, LampAdvertisement) else device
+    address = getattr(target, "address", None)
+    linux = sys.platform.startswith("linux") and bool(address)
+    attempts = 2 if linux else attempts
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            if linux:
+                return await _connect_while_scanning(target, address)
+            client = BleakClient(target, timeout=CONNECT_TIMEOUT_S)
+            try:
+                await client.connect()
+                return client
+            except BaseException:
+                try:
+                    await client.disconnect()
+                except Exception:  # noqa: BLE001
+                    pass
+                raise
+        except Exception as error:  # noqa: BLE001
+            last_error = error
+            if attempt == attempts or not address:
+                break
+            if linux:
+                log.info("Connexion à %s échouée (%s), nouvel essai %d/%d", address, str(error) or type(error).__name__,
+                         attempt + 1, attempts)
+                continue
+            if not _is_device_gone(error):
                 break
             log.info("Périphérique %s oublié par BlueZ, nouveau scan ciblé (essai %d/%d)", address, attempt, attempts)
             fresh = await BleakScanner.find_device_by_address(address, timeout=10.0)
