@@ -1,0 +1,903 @@
+diff --git a/node_modules/webbluetooth/binding-options.js b/node_modules/webbluetooth/binding-options.js
+index 85d668d..8280c5b 100644
+--- a/node_modules/webbluetooth/binding-options.js
++++ b/node_modules/webbluetooth/binding-options.js
+@@ -1,4 +1,20 @@
++const fs = require('fs');
++const path = require('path');
++
++const patchedName = 'klixa-simpleble';
++const patchedBinding = path.join(
++    __dirname,
++    'prebuilds',
++    `${patchedName}-${process.platform}-${process.arch}`,
++    'node-napi-v6.node'
++);
++
+ module.exports = {
+-    name: 'simpleble',
++    // Keep upstream prebuilds as a development fallback. Windows release builds
++    // install Klixa's rebuilt binary under a distinct name, so an already loaded
++    // upstream DLL never prevents an atomic build/copy on Windows.
++    name: process.platform === 'win32' && process.arch === 'x64' && fs.existsSync(patchedBinding)
++        ? patchedName
++        : 'simpleble',
+     napi_versions: [6],
+ }
+diff --git a/node_modules/webbluetooth/dist/adapters/adapter.d.ts b/node_modules/webbluetooth/dist/adapters/adapter.d.ts
+index e529b5d..1401e93 100644
+--- a/node_modules/webbluetooth/dist/adapters/adapter.d.ts
++++ b/node_modules/webbluetooth/dist/adapters/adapter.d.ts
+@@ -32,7 +32,7 @@ export interface Adapter extends EventTarget {
+     }>;
+     useAdapter: (index: number) => void;
+     startScan: (serviceUUIDs: Array<string>, foundFn: (device: BluetoothDeviceInit) => void) => Promise<void>;
+-    stopScan: () => void;
++    stopScan: () => Promise<void>;
+     connect: (handle: string, disconnectFn?: () => void) => Promise<void>;
+     disconnect: (handle: string) => Promise<void>;
+     discoverServices: (handle: string, serviceUUIDs?: Array<string>) => Promise<Array<BluetoothRemoteGATTServiceInit>>;
+diff --git a/node_modules/webbluetooth/dist/adapters/simpleble-adapter.d.ts b/node_modules/webbluetooth/dist/adapters/simpleble-adapter.d.ts
+index 201c8ae..fe283f0 100644
+--- a/node_modules/webbluetooth/dist/adapters/simpleble-adapter.d.ts
++++ b/node_modules/webbluetooth/dist/adapters/simpleble-adapter.d.ts
+@@ -17,7 +17,7 @@ export declare class SimplebleAdapter extends EventTarget implements BluetoothAd
+     }>;
+     useAdapter(index: number): void;
+     startScan(serviceUUIDs: Array<string>, foundFn: (device: BluetoothDeviceInit) => void): Promise<void>;
+-    stopScan(_errorFn?: (errorMsg: string) => void): void;
++    stopScan(_errorFn?: (errorMsg: string) => void): Promise<void>;
+     connect(handle: string, disconnectFn?: () => void): Promise<void>;
+     disconnect(handle: string): Promise<void>;
+     discoverServices(handle: string, serviceUUIDs?: Array<string>): Promise<Array<BluetoothRemoteGATTServiceInit>>;
+diff --git a/node_modules/webbluetooth/dist/adapters/simpleble-adapter.js b/node_modules/webbluetooth/dist/adapters/simpleble-adapter.js
+index 2d8b247..551623e 100644
+--- a/node_modules/webbluetooth/dist/adapters/simpleble-adapter.js
++++ b/node_modules/webbluetooth/dist/adapters/simpleble-adapter.js
+@@ -52,21 +52,29 @@ class PeripheralHandles {
+         this.characteristicEvents = new Map();
+     }
+     createHandles(peripheral) {
++        // A scan update can replace the native Peripheral object while keeping the
++        // same Bluetooth address. Drop the previous graph before snapshotting the
++        // services returned by SimpleBLE, otherwise 0x1827 and 0x1828 accumulate.
++        this.deleteHandles(peripheral);
+         const services = [];
++        const peripheralChildren = [];
+         for (const service of peripheral.services) {
+             const serviceHandle = `${this.handleCounter++}`;
++            peripheralChildren.push(serviceHandle);
+             this.parents.set(serviceHandle, peripheral.address);
+             this.services.set(serviceHandle, service);
+             services.push(serviceHandle);
+             const characteristics = [];
+             for (const characteristic of service.characteristics) {
+                 const characteristicHandle = `${this.handleCounter++}`;
++                peripheralChildren.push(characteristicHandle);
+                 this.parents.set(characteristicHandle, serviceHandle);
+                 this.characteristics.set(characteristicHandle, characteristic);
+                 characteristics.push(characteristicHandle);
+                 const descriptors = [];
+                 for (const descriptor of characteristic.descriptors) {
+                     const descHandle = `${this.handleCounter++}`;
++                    peripheralChildren.push(descHandle);
+                     this.parents.set(descHandle, characteristicHandle);
+                     this.descriptors.set(descHandle, descriptor);
+                     descriptors.push(descHandle);
+@@ -76,10 +84,13 @@ class PeripheralHandles {
+             this.children.set(serviceHandle, characteristics);
+         }
+         this.children.set(peripheral.address, services);
++        this.peripheralChildren.set(peripheral, peripheralChildren);
+     }
+     deleteHandles(peripheral) {
+-        const children = this.peripheralChildren.get(peripheral);
+-        if (children) {
++        // SimpleBLE may hand us a new JS wrapper for an updated advertisement.
++        // Purge every graph tracked for this address, not only the exact object.
++        const tracked = [...this.peripheralChildren.entries()].filter(([candidate]) => candidate === peripheral || candidate.address === peripheral.address);
++        for (const [candidate, children] of tracked) {
+             for (const child of children) {
+                 this.children.delete(child);
+                 this.parents.delete(child);
+@@ -88,8 +99,9 @@ class PeripheralHandles {
+                 this.descriptors.delete(child);
+                 this.characteristicEvents.delete(child);
+             }
++            this.peripheralChildren.delete(candidate);
+         }
+-        this.peripheralChildren.delete(peripheral);
++        this.children.delete(peripheral.address);
+     }
+     getServices(deviceHandle) {
+         const children = this.children.get(deviceHandle);
+@@ -218,6 +230,9 @@ class SimplebleAdapter extends EventTarget {
+         super(...arguments);
+         this.peripherals = new Map();
+         this.handles = new PeripheralHandles(this.peripherals);
++        this.scanning = false;
++        this.scanStopPromise = undefined;
++        this.scanStopResolve = undefined;
+     }
+     validDevice(device, serviceUUIDs) {
+         if (serviceUUIDs.length === 0) {
+@@ -276,62 +291,171 @@ class SimplebleAdapter extends EventTarget {
+         return adapters.map(({ address, active }, index) => ({ index, address, active }));
+     }
+     useAdapter(index) {
++        if (this.scanning || this.scanStopPromise) {
++            throw new Error('Cannot replace adapter while scan stop is pending');
++        }
+         const adapters = (0, simpleble_1.getAdapters)();
+         const selected = adapters[index];
+         if (!selected) {
+             throw new Error(`Adapter ${index} not found.`);
+         }
++        // getAdapters() creates fresh native AdapterBase instances. Re-select on every
++        // scan so SimpleBLE's merged service_data cache cannot leak 0x1827 into 0x1828.
+         this.adapter = selected;
++        this.peripherals.clear();
++        this.handles = new PeripheralHandles(this.peripherals);
+     }
+     startScan(serviceUUIDs, foundFn) {
+         return __awaiter(this, void 0, void 0, function* () {
++            if (this.scanStopPromise) {
++                yield this.scanStopPromise;
++            }
++            if (this.scanning) {
++                throw new Error('scan already in progress');
++            }
+             if (this.state === false) {
+                 throw new Error('adapter not enabled');
+             }
+             if (!this.adapter) {
+                 this.adapter = (0, simpleble_1.getAdapters)()[0];
+             }
+-            const foundPeripherals = [];
+-            this.adapter.setCallbackOnScanFound(peripheral => {
++            // PATCH (Klixa) : la lib n'écoutait QUE setCallbackOnScanFound (1er paquet
++            // publicitaire par peripheral), avec un garde-fou qui empêchait tout
++            // second traitement. Vérifié sur matériel réel (mesh Realtek RM75) : le
++            // tout premier paquet capté pour un peripheral peut ne contenir ni
++            // Service Data ni le bon flag "connectable" (annonce fractionnée sur
++            // plusieurs PDU) — figeant ce peripheral en "invalide"/"non connectable"
++            // pour toute la durée du scan, même quand des paquets ultérieurs, plus
++            // complets, arrivent. On écoute donc aussi setCallbackOnScanUpdated avec
++            // la même logique, et on retire le garde-fou anti-répétition : `foundFn`
++            // est déjà idempotent côté appelant (Map par device.id côté Klixa).
++            const handlePeripheral = peripheral => {
+                 const device = this.buildBluetoothDevice(peripheral);
+                 if (this.validDevice(device, serviceUUIDs)) {
+-                    if (!foundPeripherals.includes(device.id)) {
+-                        foundPeripherals.push(device.id);
+-                        this.peripherals.set(device.id, peripheral);
+-                        // Only call the found function the first time we find a valid device
+-                        foundFn(device);
+-                    }
++                    this.peripherals.set(device.id, peripheral);
++                    foundFn(device);
++                }
++            };
++            // Klixa's Windows backend forwards every complete advertisement through
++            // scanUpdated, including the first one. A single native callback avoids
++            // duplicate Peripheral wrappers and their shutdown race.
++            this.adapter.setCallbackOnScanUpdated(handlePeripheral);
++            this.adapter.setCallbackOnScanStop(() => {
++                this.scanning = false;
++                if (this.scanStopResolve) {
++                    this.scanStopResolve();
+                 }
++                this.adapter.clearCallbacks?.();
+             });
+             const success = this.adapter.scanStart();
+             if (!success) {
+                 throw new Error('scan start failed');
+             }
++            this.scanning = true;
+         });
+     }
+     stopScan(_errorFn) {
+-        if (this.adapter) {
++        if (this.scanStopPromise) {
++            return this.scanStopPromise;
++        }
++        if (!this.adapter || !this.scanning) {
++            return Promise.resolve();
++        }
++        let resolveStop;
++        let rejectStop;
++        let timeout;
++        const stopPromise = new Promise((resolve, reject) => {
++            resolveStop = resolve;
++            rejectStop = reject;
++        });
++        const clearPendingStop = () => {
++            clearTimeout(timeout);
++            if (this.scanStopPromise === stopPromise) {
++                this.scanStopPromise = undefined;
++                this.scanStopResolve = undefined;
++            }
++        };
++        this.scanStopPromise = stopPromise;
++        this.scanStopResolve = () => {
++            this.scanning = false;
++            clearPendingStop();
++            resolveStop();
++        };
++        timeout = setTimeout(() => {
++            clearPendingStop();
++            const error = new Error('scan stop confirmation timed out');
++            error.code = 'SIMPLEBLE_SCAN_STOP_TIMEOUT';
++            rejectStop(error);
++        }, 3000);
++        try {
+             const success = this.adapter.scanStop();
+             if (!success) {
+-                throw new Error('scan stop failed');
++                clearPendingStop();
++                const error = new Error('scan stop failed');
++                error.code = 'SIMPLEBLE_SCAN_STOP_FAILED';
++                rejectStop(error);
+             }
+         }
++        catch (error) {
++            clearPendingStop();
++            rejectStop(error);
++        }
++        return stopPromise;
+     }
+     connect(handle, disconnectFn) {
+         return __awaiter(this, void 0, void 0, function* () {
++            // SimpleBLE/WinRT does not reliably allow scanning and connecting at the
++            // same time. Wait for the native stopped callback, not only scanStop().
++            if (this.scanning || this.scanStopPromise) {
++                yield this.stopScan();
++            }
+             const peripheral = this.peripherals.get(handle);
+             if (!peripheral) {
+                 throw new Error('Peripheral not found');
+             }
+-            if (!peripheral.connectable) {
+-                throw new Error('Connection not possible');
++            // The service graph is a snapshot made immediately after connect. Remove
++            // a previous 0x1827/0x1828 graph for this address before replacing it.
++            this.handles.deleteHandles(peripheral);
++            let success;
++            try {
++                success = peripheral.connect();
++            }
++            catch (cause) {
++                const nativeDiagnostics = {
++                    connected: peripheral.connected,
++                    connectable: peripheral.connectable,
++                    serviceCount: peripheral.services.length
++                };
++                const detail = (cause === null || cause === void 0 ? void 0 : cause.message) || String(cause);
++                const error = new Error(`Connect failed (${detail}; connected=${nativeDiagnostics.connected}; connectable=${nativeDiagnostics.connectable}; services=${nativeDiagnostics.serviceCount})`, { cause });
++                error.code = 'SIMPLEBLE_CONNECT_FAILED';
++                error.nativeDiagnostics = nativeDiagnostics;
++                throw error;
+             }
+-            const success = peripheral.connect();
+             if (!success) {
+-                throw new Error('Connect failed');
++                // The native binding exposes only a boolean here. Its service list is
++                // already a completed snapshot, so polling it in JS cannot finish a
++                // failed native discovery. Report the observable native state and let
++                // the transport perform the single cleanup for this attempt.
++                const nativeDiagnostics = {
++                    connected: peripheral.connected,
++                    connectable: peripheral.connectable,
++                    serviceCount: peripheral.services.length
++                };
++                const error = new Error(`Connect failed (SimpleBLE returned false; connected=${nativeDiagnostics.connected}; connectable=${nativeDiagnostics.connectable}; services=${nativeDiagnostics.serviceCount})`);
++                error.code = 'SIMPLEBLE_CONNECT_FAILED';
++                error.nativeDiagnostics = nativeDiagnostics;
++                throw error;
+             }
+             if (disconnectFn) {
+-                peripheral.setCallbackOnDisconnected(() => disconnectFn());
++                peripheral.setCallbackOnDisconnected(() => {
++                    try {
++                        disconnectFn();
++                    }
++                    finally {
++                        peripheral.clearCallbacks?.();
++                    }
++                });
+             }
+             this.handles.createHandles(peripheral);
+         });
+@@ -342,11 +466,20 @@ class SimplebleAdapter extends EventTarget {
+             if (!peripheral) {
+                 throw new Error('Peripheral not found');
+             }
+-            const success = peripheral.disconnect();
+-            if (!success) {
+-                throw new Error('Disconnect failed');
++            try {
++                const success = peripheral.disconnect();
++                if (!success) {
++                    const nativeDiagnostics = { connected: peripheral.connected };
++                    const error = new Error(`Disconnect failed (SimpleBLE returned false; connected=${nativeDiagnostics.connected})`);
++                    error.code = 'SIMPLEBLE_DISCONNECT_FAILED';
++                    error.nativeDiagnostics = nativeDiagnostics;
++                    throw error;
++                }
++            }
++            finally {
++                this.handles.deleteHandles(peripheral);
++                peripheral.clearCallbacks?.();
+             }
+-            this.handles.deleteHandles(peripheral);
+         });
+     }
+     discoverServices(handle, serviceUUIDs) {
+@@ -394,26 +527,6 @@ class SimplebleAdapter extends EventTarget {
+                             writableAuxiliaries: false // characteristic.capabilities.includes('???'),
+                         }
+                     });
+-                    if (characteristic.canIndicate) {
+-                        peripheral.indicate(service.uuid, charUUID, data => {
+-                            if (this.handles.characteristicEvents.has(handle)) {
+-                                const event = this.handles.characteristicEvents.get(handle);
+-                                if (event) {
+-                                    event(new DataView(data.buffer));
+-                                }
+-                            }
+-                        });
+-                    }
+-                    if (characteristic.canNotify) {
+-                        peripheral.notify(service.uuid, charUUID, data => {
+-                            if (this.handles.characteristicEvents.has(handle)) {
+-                                const event = this.handles.characteristicEvents.get(handle);
+-                                if (event) {
+-                                    event(new DataView(data.buffer));
+-                                }
+-                            }
+-                        });
+-                    }
+                 }
+             }
+             return discovered;
+@@ -461,12 +574,38 @@ class SimplebleAdapter extends EventTarget {
+     }
+     enableNotify(handle, notifyFn) {
+         return __awaiter(this, void 0, void 0, function* () {
++            const { peripheral, service, characteristic } = this.handles.getCharacteristicGraph(handle);
++            const forward = data => {
++                const event = this.handles.characteristicEvents.get(handle);
++                if (event) {
++                    event(new DataView(data.buffer, data.byteOffset || 0, data.byteLength));
++                }
++            };
++            let success = false;
++            if (characteristic.canNotify) {
++                success = peripheral.notify(service.uuid, characteristic.uuid, forward);
++            }
++            else if (characteristic.canIndicate) {
++                success = peripheral.indicate(service.uuid, characteristic.uuid, forward);
++            }
++            if (!success) {
++                throw new Error('Enable notifications failed');
++            }
+             this.handles.characteristicEvents.set(handle, notifyFn);
+         });
+     }
+     disableNotify(handle) {
+         return __awaiter(this, void 0, void 0, function* () {
+-            this.handles.characteristicEvents.delete(handle);
++            const graph = this.handles.getCharacteristicGraph(handle);
++            try {
++                const success = graph.peripheral.unsubscribe(graph.service.uuid, graph.characteristic.uuid);
++                if (!success) {
++                    throw new Error('Disable notifications failed');
++                }
++            }
++            finally {
++                this.handles.characteristicEvents.delete(handle);
++            }
+         });
+     }
+     readDescriptor(handle) {
+@@ -490,4 +629,4 @@ class SimplebleAdapter extends EventTarget {
+     }
+ }
+ exports.SimplebleAdapter = SimplebleAdapter;
+-//# sourceMappingURL=simpleble-adapter.js.map
+\ No newline at end of file
++//# sourceMappingURL=simpleble-adapter.js.map
+diff --git a/node_modules/webbluetooth/dist/adapters/simpleble.d.ts b/node_modules/webbluetooth/dist/adapters/simpleble.d.ts
+index be79af8..53d098c 100644
+--- a/node_modules/webbluetooth/dist/adapters/simpleble.d.ts
++++ b/node_modules/webbluetooth/dist/adapters/simpleble.d.ts
+@@ -48,6 +48,7 @@ export interface Peripheral {
+     writeDescriptor(service: string, characteristic: string, descriptor: string, data: Uint8Array): boolean;
+     setCallbackOnConnected(cb: () => void): boolean;
+     setCallbackOnDisconnected(cb: () => void): boolean;
++    clearCallbacks(): void;
+ }
+ /** SimpleBLE Adapter. */
+ export interface Adapter {
+@@ -63,6 +64,7 @@ export interface Adapter {
+     setCallbackOnScanStop(cb: () => void): boolean;
+     setCallbackOnScanUpdated(cb: (peripheral: Peripheral) => void): boolean;
+     setCallbackOnScanFound(cb: (peripheral: Peripheral) => void): boolean;
++    clearCallbacks(): void;
+     release(): void;
+ }
+ export declare function getAdapters(): Adapter[];
+diff --git a/node_modules/webbluetooth/dist/bluetooth.d.ts b/node_modules/webbluetooth/dist/bluetooth.d.ts
+index a7e62d0..5d59006 100644
+--- a/node_modules/webbluetooth/dist/bluetooth.d.ts
++++ b/node_modules/webbluetooth/dist/bluetooth.d.ts
+@@ -88,7 +88,7 @@ declare class BluetoothImpl extends EventTarget implements Bluetooth {
+     /**
+      * Cancels the scan for devices
+      */
+-    cancelRequest(): void;
++    cancelRequest(): Promise<void>;
+     /**
+      * @hidden
+      * Request LE scan (not implemented)
+diff --git a/node_modules/webbluetooth/dist/bluetooth.js b/node_modules/webbluetooth/dist/bluetooth.js
+index 24c34aa..6481586 100644
+--- a/node_modules/webbluetooth/dist/bluetooth.js
++++ b/node_modules/webbluetooth/dist/bluetooth.js
+@@ -240,18 +240,18 @@ class BluetoothImpl extends EventTarget {
+         return new Promise((resolve, reject) => {
+             let found = false;
+             this.scanner = setTimeout(() => {
+-                this.cancelRequest();
+-                if (!found) {
+-                    reject('requestDevice error: no devices found');
+-                }
++                this.cancelRequest().then(() => {
++                    if (!found) {
++                        reject('requestDevice error: no devices found');
++                    }
++                }, reject);
+             }, this.scanTime);
+-            adapters_1.adapter.startScan(searchUUIDs, initialInfo => {
++            const started = adapters_1.adapter.startScan(searchUUIDs, initialInfo => {
+                 let deviceInfo = initialInfo;
+                 let validServices = [];
+                 const complete = (bluetoothDevice) => {
+                     this.allowedDevices.add(bluetoothDevice.id);
+-                    this.cancelRequest();
+-                    resolve(bluetoothDevice);
++                    this.cancelRequest().then(() => resolve(bluetoothDevice), reject);
+                 };
+                 // filter devices if filters specified
+                 if (isFiltered(options)) {
+@@ -277,6 +277,10 @@ class BluetoothImpl extends EventTarget {
+                     }
+                 }
+             });
++            Promise.resolve(started).catch((error) => {
++                this.cancelRequest().catch(() => { });
++                reject(error);
++            });
+         });
+     }
+     /**
+@@ -286,29 +290,44 @@ class BluetoothImpl extends EventTarget {
+         if (this.scanner !== undefined) {
+             throw new Error('getDevices error: request in progress');
+         }
+-        return new Promise(resolve => {
++        return new Promise((resolve, reject) => {
+             const devices = [];
+             this.scanner = setTimeout(() => {
+-                this.cancelRequest();
+-                resolve(devices);
++                this.cancelRequest().then(() => resolve(devices), reject);
+             }, this.scanTime);
+-            adapters_1.adapter.startScan([], deviceInfo => {
++            const started = adapters_1.adapter.startScan([], deviceInfo => {
+                 if (this.options.allowAllDevices || this.allowedDevices.has(deviceInfo.id)) {
+                     const bluetoothDevice = new device_1.BluetoothDevice(deviceInfo, this, [], () => this.forgetDevice(deviceInfo.id));
+                     devices.push(bluetoothDevice);
+                 }
+             });
++            Promise.resolve(started).catch((error) => {
++                this.cancelRequest().catch(() => { });
++                reject(error);
++            });
+         });
+     }
+     /**
+      * Cancels the scan for devices
+      */
+     cancelRequest() {
++        if (this.cancelPromise) {
++            return this.cancelPromise;
++        }
+         if (this.scanner) {
+             clearTimeout(this.scanner);
+             this.scanner = undefined;
+-            adapters_1.adapter.stopScan();
++            const pending = Promise.resolve(adapters_1.adapter.stopScan());
++            this.cancelPromise = pending;
++            const clear = () => {
++                if (this.cancelPromise === pending) {
++                    this.cancelPromise = undefined;
++                }
++            };
++            pending.then(clear, clear);
++            return pending;
+         }
++        return Promise.resolve();
+     }
+     /**
+      * @hidden
+@@ -323,4 +342,4 @@ exports.Bluetooth = BluetoothImpl;
+  * List available bluetooth adapters
+  */
+ exports.getAdapters = adapters_1.adapter.getAdapters;
+-//# sourceMappingURL=bluetooth.js.map
+\ No newline at end of file
++//# sourceMappingURL=bluetooth.js.map
+diff --git a/node_modules/webbluetooth/dist/server.d.ts b/node_modules/webbluetooth/dist/server.d.ts
+index dbcffed..a4d8bfb 100644
+--- a/node_modules/webbluetooth/dist/server.d.ts
++++ b/node_modules/webbluetooth/dist/server.d.ts
+@@ -31,7 +31,7 @@ declare class BluetoothRemoteGATTServerImpl implements BluetoothRemoteGATTServer
+     /**
+      * Disconnect the gatt server
+      */
+-    disconnect(): void;
++    disconnect(): Promise<void>;
+     /**
+      * Gets a single primary service contained in the gatt server
+      * @param service service UUID
+diff --git a/node_modules/webbluetooth/dist/server.js b/node_modules/webbluetooth/dist/server.js
+index a0c64b8..9a056bc 100644
+--- a/node_modules/webbluetooth/dist/server.js
++++ b/node_modules/webbluetooth/dist/server.js
+@@ -79,8 +79,12 @@ class BluetoothRemoteGATTServerImpl {
+      * Disconnect the gatt server
+      */
+     disconnect() {
+-        adapters_1.adapter.disconnect(this._handle);
++        // Return the adapter promise so callers can observe native cleanup failures.
++        // Existing callers that follow the Web Bluetooth void API may still ignore it.
++        const pending = adapters_1.adapter.disconnect(this._handle);
++        this.services = undefined;
+         this._connected = false;
++        return pending;
+     }
+     /**
+      * Gets a single primary service contained in the gatt server
+@@ -130,4 +134,4 @@ class BluetoothRemoteGATTServerImpl {
+     }
+ }
+ exports.BluetoothRemoteGATTServer = BluetoothRemoteGATTServerImpl;
+-//# sourceMappingURL=server.js.map
+\ No newline at end of file
++//# sourceMappingURL=server.js.map
+diff --git a/node_modules/webbluetooth/lib/adapter.cpp b/node_modules/webbluetooth/lib/adapter.cpp
+index b43a162..b1ad3b7 100644
+--- a/node_modules/webbluetooth/lib/adapter.cpp
++++ b/node_modules/webbluetooth/lib/adapter.cpp
+@@ -18,7 +18,8 @@ Napi::Object Adapter::Init(Napi::Env env, Napi::Object exports) {
+     InstanceMethod("setCallbackOnScanStop", &Adapter::SetCallbackOnScanStop),
+     InstanceMethod("setCallbackOnScanUpdated", &Adapter::SetCallbackOnScanUpdated),
+     InstanceMethod("setCallbackOnScanFound", &Adapter::SetCallbackOnScanFound),
+-    InstanceMethod("release", &Adapter::Release)
++    InstanceMethod("release", &Adapter::Release),
++    InstanceMethod("clearCallbacks", &Adapter::ClearCallbacks)
+   });
+   // clang-format on
+ 
+@@ -44,25 +45,46 @@ Adapter::Adapter(const Napi::CallbackInfo &info)
+ 
+ Adapter::~Adapter() {
+   if (this->handle != nullptr) {
++    simpleble_adapter_set_callback_on_scan_start(this->handle, nullptr, nullptr);
++    simpleble_adapter_set_callback_on_scan_stop(this->handle, nullptr, nullptr);
++    simpleble_adapter_set_callback_on_scan_updated(this->handle, nullptr, nullptr);
++    simpleble_adapter_set_callback_on_scan_found(this->handle, nullptr, nullptr);
+     simpleble_adapter_release_handle(this->handle);
+   }
++  // Active callbacks are released explicitly after every scan. During Node
++  // environment teardown, N-API owns any remaining ThreadSafeFunction; calling
++  // Release from an ObjectWrap finalizer can otherwise trigger a fatal error.
++  this->handle = nullptr;
++}
++
++void Adapter::ReleaseCallbacks() {
+   if (this->onScanStartFn) {
+     this->onScanStartFn.Release();
++    this->onScanStartFn = {};
+   }
+-
+   if (this->onScanStopFn) {
+     this->onScanStopFn.Release();
++    this->onScanStopFn = {};
+   }
+-
+   if (this->onScanUpdatedFn) {
+     this->onScanUpdatedFn.Release();
++    this->onScanUpdatedFn = {};
+   }
+-
+   if (this->onScanFoundFn) {
+     this->onScanFoundFn.Release();
++    this->onScanFoundFn = {};
+   }
++}
+ 
+-  this->handle = nullptr;
++Napi::Value Adapter::ClearCallbacks(const Napi::CallbackInfo &info) {
++  if (this->handle != nullptr) {
++    simpleble_adapter_set_callback_on_scan_start(this->handle, nullptr, nullptr);
++    simpleble_adapter_set_callback_on_scan_stop(this->handle, nullptr, nullptr);
++    simpleble_adapter_set_callback_on_scan_updated(this->handle, nullptr, nullptr);
++    simpleble_adapter_set_callback_on_scan_found(this->handle, nullptr, nullptr);
++  }
++  ReleaseCallbacks();
++  return info.Env().Undefined();
+ }
+ 
+ Napi::Value Adapter::Identifier(const Napi::CallbackInfo &info) {
+@@ -178,7 +200,6 @@ Napi::Value Adapter::SetCallbackOnScanStart(const Napi::CallbackInfo &info) {
+ 
+   this->onScanStartFn = Napi::ThreadSafeFunction::New(
+       env, info[0].As<Napi::Function>(), "onScanStartFn", 0, 1);
+-  this->onScanStartFn.Unref(env);
+ 
+   const auto ret = simpleble_adapter_set_callback_on_scan_start(
+       this->handle, onScanStart, this);
+@@ -205,7 +226,6 @@ Napi::Value Adapter::SetCallbackOnScanStop(const Napi::CallbackInfo &info) {
+ 
+   this->onScanStopFn = Napi::ThreadSafeFunction::New(
+       env, info[0].As<Napi::Function>(), "onScanStopFn", 0, 1);
+-  this->onScanStopFn.Unref(env);
+ 
+   const auto ret = simpleble_adapter_set_callback_on_scan_stop(
+       this->handle, onScanStop, this);
+@@ -231,7 +251,6 @@ Napi::Value Adapter::SetCallbackOnScanUpdated(const Napi::CallbackInfo &info) {
+ 
+   this->onScanUpdatedFn = Napi::ThreadSafeFunction::New(
+       env, info[0].As<Napi::Function>(), "onScanUpdatedFn", 0, 1);
+-  this->onScanUpdatedFn.Unref(env);
+ 
+   const auto ret = simpleble_adapter_set_callback_on_scan_updated(
+       this->handle, onScanUpdated, this);
+@@ -258,7 +277,6 @@ Napi::Value Adapter::SetCallbackOnScanFound(const Napi::CallbackInfo &info) {
+ 
+   this->onScanFoundFn = Napi::ThreadSafeFunction::New(
+       env, info[0].As<Napi::Function>(), "onScanFoundFn", 0, 1);
+-  this->onScanFoundFn.Unref(env);
+ 
+   const auto ret = simpleble_adapter_set_callback_on_scan_found(
+       this->handle, onScanFound, this);
+diff --git a/node_modules/webbluetooth/lib/adapter.h b/node_modules/webbluetooth/lib/adapter.h
+index 8229935..a250c40 100644
+--- a/node_modules/webbluetooth/lib/adapter.h
++++ b/node_modules/webbluetooth/lib/adapter.h
+@@ -36,4 +36,7 @@ private:
+   Napi::Value SetCallbackOnScanUpdated(const Napi::CallbackInfo &info);
+   Napi::Value SetCallbackOnScanFound(const Napi::CallbackInfo &info);
+   Napi::Value Release(const Napi::CallbackInfo &info);
++  Napi::Value ClearCallbacks(const Napi::CallbackInfo &info);
++
++  void ReleaseCallbacks();
+ };
+diff --git a/node_modules/webbluetooth/lib/bindings.cpp b/node_modules/webbluetooth/lib/bindings.cpp
+index b6992d3..93b6ac2 100644
+--- a/node_modules/webbluetooth/lib/bindings.cpp
++++ b/node_modules/webbluetooth/lib/bindings.cpp
+@@ -33,7 +33,9 @@ static Napi::Object Init(Napi::Env env, Napi::Object exports) {
+   Peripheral::Init(env, exports);
+   exports.Set("getAdapters", Napi::Function::New(env, GetAdapters));
+   exports.Set("isEnabled", Napi::Function::New(env, IsEnabled));
+-
++  // Runtime marker used by packaging smoke tests to ensure the shipped native
++  // binary contains Klixa's tolerant WinRT GATT discovery fix.
++  exports.Set("klixaPatchVersion", Napi::String::New(env, "rm75-gatt-discovery-v3"));
+   return exports;
+ }
+ 
+diff --git a/node_modules/webbluetooth/lib/peripheral.cpp b/node_modules/webbluetooth/lib/peripheral.cpp
+index 7ef1d69..c3de62d 100644
+--- a/node_modules/webbluetooth/lib/peripheral.cpp
++++ b/node_modules/webbluetooth/lib/peripheral.cpp
+@@ -1,4 +1,5 @@
+ #include "peripheral.h"
++#include <simpleble/PeripheralSafe.h>
+ #include "simpleble_c/simpleble.h"
+ 
+ Napi::FunctionReference Peripheral::constructor;
+@@ -30,6 +31,7 @@ Napi::Object Peripheral::Init(Napi::Env env, Napi::Object exports) {
+     InstanceMethod("writeDescriptor", &Peripheral::WriteDescriptor),
+     InstanceMethod("setCallbackOnConnected", &Peripheral::SetCallbackOnConnected),
+     InstanceMethod("setCallbackOnDisconnected", &Peripheral::SetCallbackOnDisconnected),
++    InstanceMethod("clearCallbacks", &Peripheral::ClearCallbacks),
+   });
+   // clang-format on
+ 
+@@ -67,21 +69,39 @@ Peripheral::Peripheral(const Napi::CallbackInfo &info)
+ 
+ Peripheral::~Peripheral() {
+   if (this->handle != nullptr) {
++    simpleble_peripheral_set_callback_on_connected(this->handle, nullptr, nullptr);
++    simpleble_peripheral_set_callback_on_disconnected(this->handle, nullptr, nullptr);
+     simpleble_peripheral_release_handle(this->handle);
+   }
+ 
+-  for (auto [k, fn] : notifyFns) fn.Release();
+-  for (auto [k, fn] : indicateFns) fn.Release();
++  // Normal disconnect paths call clearCallbacks(). Let N-API own any remaining
++  // ThreadSafeFunction during environment shutdown instead of releasing it from
++  // a late ObjectWrap finalizer.
++  this->handle = nullptr;
++}
+ 
++void Peripheral::ReleaseCallbacks() {
++  for (auto &[key, fn] : notifyFns) fn.Release();
++  for (auto &[key, fn] : indicateFns) fn.Release();
++  notifyFns.clear();
++  indicateFns.clear();
+   if (this->onConnectedFn) {
+     this->onConnectedFn.Release();
++    this->onConnectedFn = {};
+   }
+-
+   if (this->onDisconnectedFn) {
+     this->onDisconnectedFn.Release();
++    this->onDisconnectedFn = {};
+   }
++}
+ 
+-  this->handle = nullptr;
++Napi::Value Peripheral::ClearCallbacks(const Napi::CallbackInfo &info) {
++  if (this->handle != nullptr) {
++    simpleble_peripheral_set_callback_on_connected(this->handle, nullptr, nullptr);
++    simpleble_peripheral_set_callback_on_disconnected(this->handle, nullptr, nullptr);
++  }
++  ReleaseCallbacks();
++  return info.Env().Undefined();
+ }
+ 
+ Napi::Value Peripheral::Identifier(const Napi::CallbackInfo &info) {
+@@ -133,16 +153,26 @@ Napi::Value Peripheral::MTU(const Napi::CallbackInfo &info) {
+ 
+ Napi::Value Peripheral::Connect(const Napi::CallbackInfo &info) {
+   Napi::Env env = info.Env();
+-
+-  const auto ret = simpleble_peripheral_connect(this->handle);
+-  return Napi::Boolean::New(env, ret == SIMPLEBLE_SUCCESS);
++  try {
++    auto *peripheral = reinterpret_cast<SimpleBLE::Safe::Peripheral *>(this->handle);
++    static_cast<SimpleBLE::Peripheral *>(peripheral)->connect();
++    return Napi::Boolean::New(env, true);
++  } catch (const std::exception &err) {
++    Napi::Error::New(env, err.what()).ThrowAsJavaScriptException();
++    return env.Undefined();
++  }
+ }
+ 
+ Napi::Value Peripheral::Disconnect(const Napi::CallbackInfo &info) {
+   Napi::Env env = info.Env();
+-
+-  const auto ret = simpleble_peripheral_disconnect(this->handle);
+-  return Napi::Boolean::New(env, ret == SIMPLEBLE_SUCCESS);
++  try {
++    auto *peripheral = reinterpret_cast<SimpleBLE::Safe::Peripheral *>(this->handle);
++    static_cast<SimpleBLE::Peripheral *>(peripheral)->disconnect();
++    return Napi::Boolean::New(env, true);
++  } catch (const std::exception &err) {
++    Napi::Error::New(env, err.what()).ThrowAsJavaScriptException();
++    return env.Undefined();
++  }
+ }
+ 
+ Napi::Value Peripheral::Connected(const Napi::CallbackInfo &info) {
+@@ -434,6 +464,15 @@ Napi::Value Peripheral::Unsubscribe(const Napi::CallbackInfo &info) {
+          SIMPLEBLE_UUID_STR_LEN);
+   const auto ret =
+       simpleble_peripheral_unsubscribe(this->handle, service, characteristic);
++  const auto key = std::string(characteristic.value);
++  if (const auto it = notifyFns.find(key); it != notifyFns.end()) {
++    it->second.Release();
++    notifyFns.erase(it);
++  }
++  if (const auto it = indicateFns.find(key); it != indicateFns.end()) {
++    it->second.Release();
++    indicateFns.erase(it);
++  }
+   return Napi::Boolean::New(env, ret == SIMPLEBLE_SUCCESS);
+ }
+ 
+@@ -601,12 +640,20 @@ Napi::Value Peripheral::Notify(const Napi::CallbackInfo &info) {
+   memcpy(characteristic.value, cbChar.Utf8Value().c_str(),
+          SIMPLEBLE_UUID_STR_LEN);
+ 
+-  const auto [it, _] = notifyFns.emplace(std::string(characteristic.value), Napi::ThreadSafeFunction::New(env, cbFn, "onNotify", 0, 1));
+-  it->second.Unref(env);
++  const auto key = std::string(characteristic.value);
++  if (const auto existing = notifyFns.find(key); existing != notifyFns.end()) {
++    existing->second.Release();
++    notifyFns.erase(existing);
++  }
++  const auto [it, _] = notifyFns.emplace(key, Napi::ThreadSafeFunction::New(env, cbFn, "onNotify", 0, 1));
+ 
+   const auto ret = simpleble_peripheral_notify(this->handle, service,
+                                                characteristic, onNotify, this);
+ 
++  if (ret != SIMPLEBLE_SUCCESS) {
++    it->second.Release();
++    notifyFns.erase(it);
++  }
+   return Napi::Boolean::New(env, ret == SIMPLEBLE_SUCCESS);
+ }
+ 
+@@ -652,12 +699,20 @@ Napi::Value Peripheral::Indicate(const Napi::CallbackInfo &info) {
+   memcpy(characteristic.value, cbChar.Utf8Value().c_str(),
+          SIMPLEBLE_UUID_STR_LEN);
+ 
+-  const auto [it, _] = indicateFns.emplace(std::string(characteristic.value), Napi::ThreadSafeFunction::New(env, cbFn, "onIndicate", 0, 1));
+-    it->second.Unref(env);
++  const auto key = std::string(characteristic.value);
++  if (const auto existing = indicateFns.find(key); existing != indicateFns.end()) {
++    existing->second.Release();
++    indicateFns.erase(existing);
++  }
++  const auto [it, _] = indicateFns.emplace(key, Napi::ThreadSafeFunction::New(env, cbFn, "onIndicate", 0, 1));
+ 
+   const auto ret = simpleble_peripheral_indicate(
+       this->handle, service, characteristic, onIndicate, this);
+ 
++  if (ret != SIMPLEBLE_SUCCESS) {
++    it->second.Release();
++    indicateFns.erase(it);
++  }
+   return Napi::Boolean::New(env, ret == SIMPLEBLE_SUCCESS);
+ }
+ 
+@@ -674,9 +729,13 @@ Napi::Value Peripheral::SetCallbackOnConnected(const Napi::CallbackInfo &info) {
+     return Napi::Boolean::New(env, false);
+   }
+ 
++  if (this->onConnectedFn) {
++    simpleble_peripheral_set_callback_on_connected(this->handle, nullptr, nullptr);
++    this->onConnectedFn.Release();
++    this->onConnectedFn = {};
++  }
+   this->onConnectedFn = Napi::ThreadSafeFunction::New(
+       env, info[0].As<Napi::Function>(), "onConnected", 0, 1);
+-  this->onConnectedFn.Unref(env);
+ 
+   const auto ret = simpleble_peripheral_set_callback_on_connected(
+       this->handle, onConnected, this);
+@@ -698,9 +757,13 @@ Peripheral::SetCallbackOnDisconnected(const Napi::CallbackInfo &info) {
+     return Napi::Boolean::New(env, false);
+   }
+ 
++  if (this->onDisconnectedFn) {
++    simpleble_peripheral_set_callback_on_disconnected(this->handle, nullptr, nullptr);
++    this->onDisconnectedFn.Release();
++    this->onDisconnectedFn = {};
++  }
+   this->onDisconnectedFn = Napi::ThreadSafeFunction::New(
+       env, info[0].As<Napi::Function>(), "onDisconnectedFn", 0, 1);
+-  this->onDisconnectedFn.Unref(env);
+ 
+   const auto ret = simpleble_peripheral_set_callback_on_disconnected(
+       this->handle, onDisconnected, this);
+diff --git a/node_modules/webbluetooth/lib/peripheral.h b/node_modules/webbluetooth/lib/peripheral.h
+index 027730b..5c2f586 100644
+--- a/node_modules/webbluetooth/lib/peripheral.h
++++ b/node_modules/webbluetooth/lib/peripheral.h
+@@ -45,6 +45,9 @@ private:
+   Napi::Value WriteDescriptor(const Napi::CallbackInfo &info);
+   Napi::Value SetCallbackOnConnected(const Napi::CallbackInfo &info);
+   Napi::Value SetCallbackOnDisconnected(const Napi::CallbackInfo &info);
++  Napi::Value ClearCallbacks(const Napi::CallbackInfo &info);
++
++  void ReleaseCallbacks();
+ 
+   static void onConnected(simpleble_peripheral_t peripheral, void *userdata);
+   static void onDisconnected(simpleble_peripheral_t peripheral, void *userdata);

@@ -1,0 +1,29 @@
+{
+  "name": "klixa-smallrig-lan",
+  "version": "0.1.0",
+  "description": "Lampes SmallRig RM75 (Bluetooth Mesh) exposées à Klixa comme un appareil LAN (protocole des appareils du compagnon).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=20.6" },
+  "bin": { "klixa-smallrig": "src/cli.js" },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/cli.js run",
+    "cli": "node --env-file-if-exists=.env src/cli.js",
+    "test": "node --test",
+    "lint": "eslint .",
+    "build:webbluetooth:win": "node scripts/build-webbluetooth-win.mjs",
+    "diagnose:gatt": "node scripts/diagnose-smallrig-gatt.mjs",
+    "smoke:webbluetooth": "node scripts/smoke-webbluetooth.mjs",
+    "postinstall": "patch-package"
+  },
+  "dependencies": {
+    "patch-package": "^8.0.1",
+    "webbluetooth": "3.7.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "eslint": "^10.8.0",
+    "globals": "^17.8.0"
+  }
+}

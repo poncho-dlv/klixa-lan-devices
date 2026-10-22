@@ -1,0 +1,10 @@
+{
+  "name": "klixa-lan-devices",
+  "private": true,
+  "description": "Scripts d'appareils LAN pour Klixa (machine à fumée, lampes SmallRig, SDK).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "test": "node --test \"tests/*.test.js\" && python -m unittest discover -s sdk/python/tests && python -m unittest discover -s devices/smoke-machine/tests"
+  }
+}

@@ -1,0 +1,6 @@
+gpiozero
+# Backend GPIO recommandé sur Raspberry Pi OS récent (Bookworm). Sur ancien OS,
+# gpiozero retombe sur RPi.GPIO automatiquement.
+lgpio
+# Dépendance de klixa_device_agent.py (connexion WS sortante vers le compagnon).
+websockets>=13
