@@ -36,6 +36,7 @@ class Config:
     mesh_state_file: str
     max_lamps: int
     seq_block_size: int
+    keep_connected: bool
 
 
 def load_config(env=None):
@@ -50,4 +51,6 @@ def load_config(env=None):
         mesh_state_file=str(env.get("SMALLRIG_MESH_STATE_FILE") or "./smallrig-mesh-state.json").strip(),
         max_lamps=_int(env.get("SMALLRIG_MAX_LAMPS"), 50),
         seq_block_size=_int(env.get("SMALLRIG_SEQ_BLOCK_SIZE"), 100),
+        # Garde la connexion Bluetooth ouverte (commandes immédiates). À 0, elle n'est ouverte qu'à la demande.
+        keep_connected=str(env.get("SMALLRIG_KEEP_CONNECTED", "1")).strip().lower() not in ("0", "false", "no", "non"),
     )

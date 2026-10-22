@@ -538,9 +538,12 @@ class MeshClient:
                 self._last_good_proxy_candidate = None
                 log.warning("Reconnexion directe au dernier Proxy connu échouée, re-scan complet : %s", error)
 
-        # Fenêtre >= 6 s : en dessous, le scan manque souvent des annonces exploitables.
-        candidates = await self._scan(timeout_ms=8000)
+        # Le scan s'arrête dès qu'une lampe de NOTRE réseau est vue (la fenêtre de 8 s n'est qu'un plafond).
         expected = net_keys["network_id"]
+        candidates = await self._scan(
+            timeout_ms=8000,
+            stop_when=lambda lamp: lamp.kind == "provisioned" and bool(lamp.network_id)
+            and bytes(lamp.network_id) == expected)
         # Une annonce Network ID authentifie le réseau avant l'ouverture GATT ; les annonces Node Identity ne
         # sont essayées qu'après tous les candidats dont le Network ID correspond exactement.
         exact = [c for c in candidates if c.kind == "provisioned" and c.network_id and bytes(c.network_id) == expected]
@@ -1072,6 +1075,14 @@ class MeshClient:
                  "configuration_error": node.get("configurationError"),
                  "reset_pending": bool(pending_reset and pending_reset["uuid"] == node["uuid"])}
                 for node in state["nodes"]]
+
+    @property
+    def connected(self):
+        return bool(self._proxy_session and self._proxy_session.connected)
+
+    async def connect(self):
+        """Ouvre (ou vérifie) la session Proxy sans envoyer de commande."""
+        await self._serialized(self._ensure_proxy_session)
 
     async def stop(self):
         await self._serialized(self._close_proxy)

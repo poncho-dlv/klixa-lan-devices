@@ -22,7 +22,7 @@ from pathlib import Path
 
 from .agent import build_agent
 from .config import load_config, load_dotenv
-from .lamps import LampController
+from .lamps import LampController, keep_connected
 from .state_file import load_persisted_state, make_state_writer
 
 log = logging.getLogger("smallrig.cli")
@@ -67,9 +67,13 @@ async def run(config):
     lamps = create_lamps(config)
     agent = build_agent(config, lamps)
     log.info("%d lampe(s) appairée(s), état mesh : %s", len(lamps.list()), Path(config.mesh_state_file).resolve())
+    keeper = asyncio.ensure_future(keep_connected(lamps)) if config.keep_connected else None
     try:
         await agent.serve()
     finally:
+        if keeper:
+            keeper.cancel()
+            await asyncio.gather(keeper, return_exceptions=True)
         await lamps.stop()
 
 

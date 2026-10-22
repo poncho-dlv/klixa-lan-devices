@@ -80,6 +80,60 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(lamp.received_lq, [lq.encode_hsi(0, 100, 50)])
 
 
+class KeepConnectedTests(unittest.TestCase):
+    def test_reconnects_when_the_session_drops_and_backs_off_on_failures(self):
+        class Controller:
+            def __init__(self):
+                self.is_connected, self.calls, self.fail = False, 0, 1
+
+            def list(self):
+                return [1]
+
+            @property
+            def connected(self):
+                return self.is_connected
+
+            async def ensure_connected(self):
+                self.calls += 1
+                if self.fail:
+                    self.fail -= 1
+                    raise RuntimeError("lampe éteinte")
+                self.is_connected = True
+
+        async def scenario():
+            controller = Controller()
+            task = asyncio.ensure_future(lamps_module.keep_connected(controller, interval_s=0.01, max_backoff_s=0.05))
+            await asyncio.sleep(0.15)
+            first = (controller.calls, controller.connected)
+            controller.is_connected = False  # la connexion tombe
+            await asyncio.sleep(0.15)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            return first, controller.calls
+
+        first, calls = run(scenario())
+        self.assertEqual(first, (2, True))  # un échec, puis la connexion
+        self.assertEqual(calls, 3)  # et une reconnexion après la coupure
+
+    def test_nothing_is_done_without_a_paired_lamp(self):
+        class Empty:
+            connected = False
+
+            def list(self):
+                return []
+
+            async def ensure_connected(self):
+                raise AssertionError("ne doit pas être appelé")
+
+        async def scenario():
+            task = asyncio.ensure_future(lamps_module.keep_connected(Empty(), interval_s=0.01))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        run(scenario())
+
+
 class ColorTests(unittest.TestCase):
     def test_hex_to_hue_sat_matches_node(self):
         expected = {"#FF0000": (0, 100), "#00FF00": (120, 100), "#0000FF": (240, 100), "#FFFFFF": (0, 0),
@@ -120,8 +174,11 @@ class ConfigAndStateFileTests(unittest.TestCase):
         config = load_config({})
         self.assertEqual((config.device_id, config.max_lamps, config.seq_block_size, config.companion_url),
                          ("smallrig", 50, 100, "ws://127.0.0.1:8786/devices/ws"))
-        config = load_config({"DEVICE_TOKEN": " kxd_x ", "SMALLRIG_MAX_LAMPS": "7", "SMALLRIG_SEQ_BLOCK_SIZE": "oops"})
-        self.assertEqual((config.device_token, config.max_lamps, config.seq_block_size), ("kxd_x", 7, 100))
+        config = load_config({"DEVICE_TOKEN": " kxd_x ", "SMALLRIG_MAX_LAMPS": "7", "SMALLRIG_SEQ_BLOCK_SIZE": "oops",
+                              "SMALLRIG_KEEP_CONNECTED": "0"})
+        self.assertEqual((config.device_token, config.max_lamps, config.seq_block_size, config.keep_connected),
+                         ("kxd_x", 7, 100, False))
+        self.assertTrue(load_config({}).keep_connected)
 
     def test_dotenv_does_not_override_the_environment(self):
         with tempfile.TemporaryDirectory() as folder:

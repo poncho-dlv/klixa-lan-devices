@@ -92,6 +92,42 @@ class ControlTests(unittest.TestCase):
         self.assertLessEqual(harness.state["seq"], harness.state["seqAllocatedUpTo"])
         self.assertGreater(harness.state["seq"], 12)
 
+    def test_the_proxy_scan_stops_as_soon_as_our_network_is_seen(self):
+        lamp = FakeLamp()
+        harness = Harness(lamp)
+        seen = {}
+        original = harness.ble.scan_for_lamp_advertisements
+
+        async def spying_scan(timeout_ms=6000, stop_when=None):
+            found = await original(timeout_ms, stop_when)
+            seen["stops_on_ours"] = bool(stop_when and stop_when(found[0]))
+            foreign = type(found[0])(found[0].ble_device_id, "provisioned", network_id=bytes(8))
+            seen["ignores_foreign"] = not stop_when(foreign)
+            return found
+
+        harness.client._scan = spying_scan
+
+        async def scenario():
+            await harness.client.set_power([lamp.device_uuid.hex()], on=True)
+            await harness.client.stop()
+
+        run(scenario())
+        self.assertEqual(seen, {"stops_on_ours": True, "ignores_foreign": True})
+
+    def test_connect_opens_the_session_in_advance_and_reports_it(self):
+        lamp = FakeLamp()
+        harness = Harness(lamp)
+
+        async def scenario():
+            before = harness.client.connected
+            await harness.client.connect()
+            during = (harness.client.connected, harness.ble.proxy_opens)
+            await harness.client.set_power([lamp.device_uuid.hex()], on=True)
+            await harness.client.stop()
+            return before, during, harness.ble.proxy_opens, harness.client.connected
+
+        self.assertEqual(run(scenario()), (False, (True, 1), 1, False))
+
     def test_read_status_and_capacity(self):
         lamp = FakeLamp()
         harness = Harness(lamp)

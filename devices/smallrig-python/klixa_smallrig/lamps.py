@@ -2,6 +2,7 @@
 
 Pilote UNE lampe à la fois (chaque lampe est un élément `light` de l'appareil LAN). Le maintien temporaire et la
 restauration sont faits par le compagnon : ce contrôleur ne fournit que `set_state` et `get_state`."""
+import asyncio
 import logging
 
 from .mesh_client import MeshClient
@@ -268,8 +269,35 @@ class LampController:
     def list(self):
         return self.client.list_nodes()
 
+    @property
+    def connected(self):
+        return self.client.connected
+
+    async def ensure_connected(self):
+        """Ouvre la session Proxy à l'avance : la première commande n'attend alors plus ni scan ni connexion."""
+        await self.client.connect()
+
     async def discover(self, timeout_ms=6000):
         return await self.client.discover(int(clamp(timeout_ms, 1000, 20000, 6000)))
 
     async def stop(self):
         await self.client.stop()
+
+
+async def keep_connected(controller, interval_s=5.0, max_backoff_s=30.0):
+    """Maintient la session Proxy ouverte : la (re)connecte au démarrage puis dès qu'elle tombe, avec un délai
+    croissant en cas d'échec. S'arrête avec l'annulation de la tâche."""
+    delay = interval_s
+    while True:
+        try:
+            if controller.list() and not controller.connected:
+                await controller.ensure_connected()
+                log.info("Session Proxy ouverte")
+            delay = interval_s
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001 - lampe éteinte, hors de portée... : on réessaiera
+            delay = min(max_backoff_s, delay * 2)
+            log.info("Session Proxy indisponible (%s), nouvel essai dans %.0f s", str(error) or type(error).__name__,
+                     delay)
+        await asyncio.sleep(delay)
