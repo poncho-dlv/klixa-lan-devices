@@ -147,6 +147,7 @@ class ProxySession:
         return seq
 
     async def _write_proxy_pdu(self, pdu_type, data):
+        log.debug("→ Proxy PDU type %d, %d octets", pdu_type, len(data))
         for fragment in encode_proxy_pdus(pdu_type, data, self.conn.max_attribute_value_length):
             await self.conn.write(fragment)
 
@@ -243,6 +244,7 @@ class ProxySession:
             if not message:
                 return
             pdu_type, payload = message
+            log.debug("← Proxy PDU type %d, %d octets", pdu_type, len(payload))
             if pdu_type == PROXY_PDU_NETWORK:
                 self._handle_network_pdu(payload)
             elif pdu_type == PROXY_PDU_PROXY_CONFIGURATION:
@@ -322,6 +324,8 @@ class ProxySession:
         except Exception as error:  # noqa: BLE001
             log.warning("Network PDU ignoré (déchiffrement) : %s", error)
             return
+        log.debug("← Network PDU src=0x%04x dst=0x%04x seq=%d ctl=%s ttl=%d", decoded["src"], decoded["dst"],
+                  decoded["seq"], decoded["ctl"], decoded["ttl"])
         if decoded["dst"] != self.provisioner_address:
             return
         if decoded["ctl"]:

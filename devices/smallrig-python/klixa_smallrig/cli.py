@@ -7,6 +7,10 @@
     python -m klixa_smallrig reconfigure <uuid>       relance la configuration d'une lampe déjà appairée
     python -m klixa_smallrig forget <uuid> [--force]  oublie une lampe (--force : sans la réinitialiser)
     python -m klixa_smallrig status <uuid>            état et batterie d'une lampe
+    python -m klixa_smallrig set <uuid> [--color #RRGGBB] [--brightness 1-100] [--kelvin K] [--fx 1-12] [--off]
+                                                      envoie une commande à une lampe (test)
+
+Option globale : -v / --verbose (journal détaillé des trames mesh).
 
 Un seul processus doit utiliser l'état mesh à la fois : arrêtez `run` avant d'appairer ou d'oublier."""
 import argparse
@@ -32,6 +36,7 @@ def create_lamps(config):
 
 def build_parser():
     parser = argparse.ArgumentParser(prog="klixa_smallrig", description="Lampes SmallRig RM75 pour Klixa")
+    parser.add_argument("-v", "--verbose", action="store_true", help="journal détaillé des trames mesh")
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("run")
     scan = sub.add_parser("scan")
@@ -43,6 +48,13 @@ def build_parser():
     sub.add_parser("list")
     for name in ("reconfigure", "status"):
         sub.add_parser(name).add_argument("uuid")
+    send = sub.add_parser("set")
+    send.add_argument("uuid")
+    send.add_argument("--color", help="#RRGGBB")
+    send.add_argument("--brightness", type=float)
+    send.add_argument("--kelvin", type=float)
+    send.add_argument("--fx", help="numéro d'effet 1-12")
+    send.add_argument("--off", action="store_true")
     forget = sub.add_parser("forget")
     forget.add_argument("uuid")
     forget.add_argument("--force", action="store_true")
@@ -97,6 +109,12 @@ async def run_command(args, config):
             print(json.dumps(await lamps.reconfigure(args.uuid), ensure_ascii=False))
         elif args.command == "forget":
             print(json.dumps(await lamps.forget(args.uuid, force_local=args.force), ensure_ascii=False))
+        elif args.command == "set":
+            state = {"on": not args.off}
+            for key in ("color", "brightness", "kelvin", "fx"):
+                if getattr(args, key) is not None:
+                    state[key] = getattr(args, key)
+            print(json.dumps(await lamps.set_state(args.uuid, state), ensure_ascii=False))
         elif args.command == "status":
             print(json.dumps(await lamps.status(args.uuid), indent=2, ensure_ascii=False))
     finally:
@@ -105,8 +123,8 @@ async def run_command(args, config):
 
 def main(argv=None):
     load_dotenv()
-    logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s")
     args = build_parser().parse_args(argv)
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="[%(name)s] %(message)s")
     try:
         asyncio.run(run_command(args, load_config()))
     except KeyboardInterrupt:
